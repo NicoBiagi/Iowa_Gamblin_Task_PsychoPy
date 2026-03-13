@@ -89,7 +89,7 @@ def append_trial(record):
 init_csv()
 
 # ── Task constants ────────────────────────────────────────────────────────────
-TOTAL_TRIALS   = 100
+TOTAL_TRIALS   = 10
 STARTING_MONEY = 2000
 ITI_DURATION   = 1.0   # blank screen between trials (seconds)
 
