@@ -135,6 +135,61 @@ def show_text(text, wait_for_key=True, duration=None, color="white", height=30):
     elif duration:
         core.wait(duration)
 
+# ── Helper: show image and wait for keypress ──────────────────────────────────
+def show_image_pages(image_paths):
+
+    images = []
+    
+    for path in image_paths:
+        img = visual.ImageStim(win, image=path, units="pix")
+        
+        img_w, img_h = img.size
+        win_w, win_h = win.size
+        
+        # scale to fit screen
+        scale = min(win_w / img_w, win_h / img_h) * 0.95
+        img.size = (img_w * scale, img_h * scale)
+        
+        images.append(img)
+
+    page = 0
+
+    instruction = visual.TextStim(
+        win,
+        text="Left/Right to navigate, SPACE to continue",
+        pos=(0, -win.size[1]/2 + 30),
+        height=24,
+        color="black"
+    )
+
+    counter = visual.TextStim(
+        win,
+        text="",
+        pos=(0, win.size[1]/2 - 40),
+        height=28,
+        color="black"
+    )
+
+    while True:
+        images[page].draw()
+        
+        counter.text = f"Page {page+1} / {len(images)}"
+        counter.draw()
+        instruction.draw()
+        
+        win.flip()
+
+        keys = event.waitKeys(keyList=["left", "right", "space", "escape"])
+
+        if "right" in keys:
+            page = min(page + 1, len(images) - 1)
+        elif "left" in keys:
+            page = max(page - 1, 0)
+        elif "space" in keys:
+            break
+        elif "escape" in keys:
+            core.quit()
+
 # ── Welcome ───────────────────────────────────────────────────────────────────
 show_text(
     "Iowa Gambling Task\n\n"
@@ -142,6 +197,15 @@ show_text(
     "Press SPACE to read the instructions.",
     wait_for_key=True
 )
+
+# ── Information sheet image ───────────────────────────────────────────────────
+info_pages = [
+    "InformationSheet_VST_page1.png",
+    "InformationSheet_VST_page2.png",
+    "InformationSheet_VST_page3.png"
+]
+
+show_image_pages(info_pages)
 
 # ── Instructions ──────────────────────────────────────────────────────────────
 show_text(
