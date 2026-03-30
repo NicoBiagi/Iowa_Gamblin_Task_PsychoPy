@@ -115,11 +115,12 @@ deck_draw_count = {"A": 0, "B": 0, "C": 0, "D": 0}
 
 # ── PsychoPy window ───────────────────────────────────────────────────────────
 win = visual.Window(
-    size=[1280, 800],
+    size=[1920, 1080],
     fullscr=True,
     color=[-0.85, -0.85, -0.6],
     units="pix",
-    allowGUI=False
+    allowGUI=False,
+    allowStencil=True
 )
 
 win.mouseVisible = False
@@ -139,171 +140,151 @@ def show_text(text, wait_for_key=True, duration=None, color="white", height=30):
 # ── PDF pages as images ───────────────────────────────────────────────────────
 def show_pdf_pages(image_paths, title_text="Participant Information Sheet"):
     """
-    Display a multi-page document supplied as a list of PNG files (one per page).
-    Each page fills the central panel; UP/DOWN or mouse wheel scrolls within a
-    page; RIGHT / LEFT (or N / P) move between pages.
-    SPACE or RETURN on the last page exits.
-
-    Expected file naming: pass a list of paths, e.g.
-        ["InformationSheet_VST_p1.png",
-         "InformationSheet_VST_p2.png",
-         "InformationSheet_VST_p3.png"]
-
-    The images are scaled to fit the panel width (800 px) while preserving
-    aspect ratio, so a typical A4 page will be taller than the visible area
-    and will need scrolling.
+    Display a multi-page PDF (as PNG files) in a scrollable panel.
+    Layout is calculated for a 1920x1080 screen (y range -540 to +540).
+    UP/DOWN scrolls within a page; RIGHT/LEFT or N/P flip pages;
+    SPACE/RETURN on the last page exits.
     """
     win.mouseVisible = True
     mouse = event.Mouse(win=win)
 
-    PANEL_W     = 800    # display width for each page image (px)
-    PANEL_H     = 560    # visible height of the scrolling area (px)
-    PANEL_TOP   =  260   # y of the top edge of the visible area
-    PANEL_BOT   = -260   # y of the bottom edge
-    SCROLL_STEP =  60    # px per key / wheel tick
-    COVER_H     =  200   # height of masking rectangles (must reach screen edges)
+    # ── Layout constants (1920x1080, y: -540..+540) ───────────────────────────
+    PANEL_W    = 860    # image display width in px
+    PANEL_TOP  = 400    # y of top edge of the visible panel
+    PANEL_BOT  = -410   # y of bottom edge (leaves ~130px for nav below)
+    PANEL_H    = PANEL_TOP - PANEL_BOT          # 810 px
+    PANEL_CY   = (PANEL_TOP + PANEL_BOT) / 2   # centre y of panel
+    SCROLL_STEP = 80    # px per key / wheel tick
 
     n_pages = len(image_paths)
 
-    # ── Pre-load all page images ──────────────────────────────────────────────
-    page_stims = []
-    page_heights = []   # scaled height of each image in px
+    # ── Pre-load and scale images ─────────────────────────────────────────────
+    page_stims   = []
+    page_heights = []
     for path in image_paths:
         img = visual.ImageStim(win, image=path, units="pix")
-        # Scale so width == PANEL_W, maintain aspect ratio
         orig_w, orig_h = img.size
-        scale = PANEL_W / orig_w
+        scale    = PANEL_W / orig_w
         scaled_h = orig_h * scale
         img.size = (PANEL_W, scaled_h)
         page_stims.append(img)
         page_heights.append(scaled_h)
 
+    # ── Aperture: hard-clips image to the panel rectangle ────────────────────
+    aperture = visual.Aperture(
+        win,
+        size=(PANEL_W, PANEL_H),
+        pos=(0, PANEL_CY),
+        shape="square",
+        units="pix"
+    )
+    aperture.disable()
+
     # ── Static UI elements ────────────────────────────────────────────────────
     title_stim = visual.TextStim(
         win, text=title_text,
-        pos=(0, 345), color=[0.94, 0.75, 0.25],
-        height=34, bold=True, wrapWidth=1000
+        pos=(0, 500), color=[0.94, 0.75, 0.25],
+        height=40, bold=True, wrapWidth=1200
     )
-
     page_counter = visual.TextStim(
         win, text="",
-        pos=(0, 305), color=[0.7, 0.7, 0.6],
-        height=20, wrapWidth=1000
+        pos=(0, 450), color=[0.7, 0.7, 0.6],
+        height=26, wrapWidth=1200
     )
-
     hint_last = visual.TextStim(
-        win, text="◀ BACK   |   SPACE to continue",
-        pos=(0, -345), color=[0.6, 0.6, 0.6], height=20
+        win, text="\u25c0 BACK   |   SPACE to continue",
+        pos=(0, PANEL_BOT - 45), color=[0.6, 0.6, 0.6], height=24
     )
     hint_mid = visual.TextStim(
-        win, text="◀ BACK   |   NEXT ▶",
-        pos=(0, -345), color=[0.6, 0.6, 0.6], height=20
+        win, text="\u25c0 BACK   |   NEXT \u25b6",
+        pos=(0, PANEL_BOT - 45), color=[0.6, 0.6, 0.6], height=24
     )
     hint_first = visual.TextStim(
-        win, text="▲ ▼ scroll   |   NEXT ▶",
-        pos=(0, -345), color=[0.6, 0.6, 0.6], height=20
+        win, text="NEXT \u25b6",
+        pos=(0, PANEL_BOT - 45), color=[0.6, 0.6, 0.6], height=24
     )
-
     scroll_hint = visual.TextStim(
-        win, text="▲ ▼ to scroll",
-        pos=(0, -318), color=[0.7, 0.7, 0.5], height=18
+        win, text="\u25b2 \u25bc to scroll",
+        pos=(0, PANEL_BOT - 80), color=[0.7, 0.7, 0.5], height=22
     )
-
-    # Cover rectangles — mask image pixels that fall outside the visible panel
-    top_cover = visual.Rect(win, width=1300, height=COVER_H,
-                            pos=(0,  PANEL_TOP + COVER_H / 2),
-                            fillColor=[-0.85, -0.85, -0.6], lineWidth=0)
-    bot_cover = visual.Rect(win, width=1300, height=COVER_H,
-                            pos=(0,  PANEL_BOT - COVER_H / 2),
-                            fillColor=[-0.85, -0.85, -0.6], lineWidth=0)
-
-    # Scrollbar track background
-    bar_track = visual.Rect(win, width=8, height=PANEL_H,
-                            pos=(PANEL_W / 2 + 20, 0),
-                            fillColor=[-0.6, -0.6, -0.5], lineWidth=0)
+    bar_track = visual.Rect(
+        win, width=10, height=PANEL_H,
+        pos=(PANEL_W / 2 + 25, PANEL_CY),
+        fillColor=[-0.6, -0.6, -0.5], lineWidth=0
+    )
 
     cur_page = 0
     scroll_y = 0
-
-    prev_buttons = mouse.getPressed()
-    prev_wheel   = mouse.getWheelRel()[1]
+    prev_wheel = mouse.getWheelRel()[1]
 
     while True:
         scaled_h   = page_heights[cur_page]
+        # At scroll_y=0: top of image at PANEL_TOP
+        # At scroll_y=max_scroll: bottom of image at PANEL_BOT
         max_scroll = max(0, scaled_h - PANEL_H)
 
-        # ── input ─────────────────────────────────────────────────────────────
+        # ── Input ─────────────────────────────────────────────────────────────
         keys = event.getKeys(["up", "down", "left", "right", "n", "p",
                                "space", "return", "escape"])
         for k in keys:
             if k == "escape":
-                win.close(); core.quit()
-            if k in ("up",):
+                aperture.disable(); win.close(); core.quit()
+            if k == "up":
                 scroll_y = max(0, scroll_y - SCROLL_STEP)
-            if k in ("down",):
+            if k == "down":
                 scroll_y = min(max_scroll, scroll_y + SCROLL_STEP)
             if k in ("right", "n"):
                 if cur_page < n_pages - 1:
-                    cur_page += 1
-                    scroll_y  = 0
+                    cur_page += 1; scroll_y = 0
             if k in ("left", "p"):
                 if cur_page > 0:
-                    cur_page -= 1
-                    scroll_y  = 0
+                    cur_page -= 1; scroll_y = 0
             if k in ("space", "return"):
                 if cur_page == n_pages - 1:
+                    aperture.disable()
                     win.mouseVisible = False
                     return
                 else:
-                    cur_page += 1
-                    scroll_y  = 0
+                    cur_page += 1; scroll_y = 0
 
         cur_wheel = mouse.getWheelRel()[1]
         delta = cur_wheel - prev_wheel
         if delta != 0:
-            scroll_y = max(0, min(max_scroll, scroll_y - delta * SCROLL_STEP))
+            scroll_y = max(0, min(max_scroll, scroll_y + delta * SCROLL_STEP))
         prev_wheel = cur_wheel
 
-        # ── draw ─────────────────────────────────────────────────────────────
-        # Pin top of image to PANEL_TOP, then shift down by scroll_y
-        img_top_y   = PANEL_TOP - scroll_y
-        img_centre_y = img_top_y - scaled_h / 2
+        # ── Draw ──────────────────────────────────────────────────────────────
+        # Image top pinned to PANEL_TOP at scroll_y=0.
+        # Increasing scroll_y shifts image upward (revealing content below).
+        img_centre_y = PANEL_TOP - scroll_y - scaled_h / 2
         page_stims[cur_page].pos = (0, img_centre_y)
-        page_stims[cur_page].draw()
 
-        # Mask overflow outside visible panel
-        top_cover.draw()
-        bot_cover.draw()
+        aperture.enable()
+        page_stims[cur_page].draw()
+        aperture.disable()
 
         title_stim.draw()
-
         page_counter.text = f"Page {cur_page + 1} of {n_pages}"
         page_counter.draw()
 
-        # Hint line depends on which page we're on
-        if n_pages == 1:
+        if n_pages == 1 or cur_page == n_pages - 1:
             hint_last.draw()
         elif cur_page == 0:
             hint_first.draw()
-        elif cur_page == n_pages - 1:
-            hint_last.draw()
         else:
             hint_mid.draw()
 
-        # Scrollbar
         if max_scroll > 0:
             bar_track.draw()
             frac  = scroll_y / max_scroll
-            bar_h = max(30, PANEL_H * (PANEL_H / scaled_h))
-            bar_y = PANEL_TOP - (bar_h / 2) - frac * (PANEL_H - bar_h)
-            bar_stim = visual.Rect(win, width=8, height=bar_h,
-                                   pos=(PANEL_W / 2 + 20, bar_y),
-                                   fillColor=[0.94, 0.75, 0.25], lineWidth=0)
-            bar_stim.draw()
+            bar_h = max(40, PANEL_H * (PANEL_H / scaled_h))
+            bar_y = PANEL_TOP - bar_h / 2 - frac * (PANEL_H - bar_h)
+            visual.Rect(win, width=10, height=bar_h,
+                        pos=(PANEL_W / 2 + 25, bar_y),
+                        fillColor=[0.94, 0.75, 0.25], lineWidth=0).draw()
             scroll_hint.draw()
 
         win.flip()
-
 
 # ── Information sheet PNG pages ───────────────────────────────────────────────
 # Convert InformationSheet_VST.pdf to PNGs (one per page) and place them in
@@ -403,7 +384,7 @@ def show_consent_form():
         cur_wheel = mouse.getWheelRel()[1]
         delta = cur_wheel - prev_wheel
         if delta != 0:
-            scroll_y = max(0, min(max_scroll, scroll_y - delta * SCROLL_STEP))
+            scroll_y = max(0, min(max_scroll, scroll_y + delta * SCROLL_STEP))
         prev_wheel = cur_wheel
 
         cur_buttons = mouse.getPressed()
