@@ -72,7 +72,14 @@ CSV_HEADERS = [
     "participant_id", "age", "gender", "date",
     "trial_number", "card_selected",
     "total_before", "amount_won", "amount_lost", "net_change",
-    "loss_occurred", "total_after", "reaction_time_ms"
+    "loss_occurred", "total_after", "reaction_time_ms",
+    
+    # ── Questionnaire fields ────────────────────────────────────────────────
+    "questionnaire",
+    "question_number",
+    "question_text",
+    "response_value",
+    "response_label"
 ]
 
 def init_csv():
@@ -88,7 +95,7 @@ def append_trial(record):
 init_csv()
 
 # ── Task constants ────────────────────────────────────────────────────────────
-TOTAL_TRIALS   = 10
+TOTAL_TRIALS   = 3
 STARTING_MONEY = 2000
 ITI_DURATION   = 1.0   # blank screen between trials (seconds)
 
@@ -115,11 +122,12 @@ deck_draw_count = {"A": 0, "B": 0, "C": 0, "D": 0}
 
 # ── PsychoPy window ───────────────────────────────────────────────────────────
 win = visual.Window(
-    size=[1280, 800],
+    size=[1920, 1080],
     fullscr=True,
     color=[-0.85, -0.85, -0.6],
     units="pix",
-    allowGUI=False
+    allowGUI=False,
+    allowStencil=True
 )
 
 win.mouseVisible = False
@@ -135,77 +143,423 @@ def show_text(text, wait_for_key=True, duration=None, color="white", height=30):
     elif duration:
         core.wait(duration)
 
-# ── Helper: show image and wait for keypress ──────────────────────────────────
-def show_image_pages(image_paths):
 
-    images = []
-    
+# ── PDF pages as images ───────────────────────────────────────────────────────
+def show_pdf_pages(image_paths, title_text="Participant Information Sheet"):
+    """
+    Display a multi-page PDF (as PNG files) in a scrollable panel.
+    Layout is calculated for a 1920x1080 screen (y range -540 to +540).
+    UP/DOWN scrolls within a page; RIGHT/LEFT or N/P flip pages;
+    SPACE/RETURN on the last page exits.
+    """
+    win.mouseVisible = True
+    mouse = event.Mouse(win=win)
+
+    # ── Layout constants ──────────────────────────────────────────────────────
+    PANEL_W = 860
+    PANEL_TOP = 400
+    PANEL_BOT = -410
+    PANEL_H = PANEL_TOP - PANEL_BOT
+    PANEL_CY = (PANEL_TOP + PANEL_BOT) / 2
+    SCROLL_STEP = 80
+
+    n_pages = len(image_paths)
+
+    # ── Pre-load and scale images ─────────────────────────────────────────────
+    page_stims = []
+    page_heights = []
+
     for path in image_paths:
         img = visual.ImageStim(win, image=path, units="pix")
-        
-        img_w, img_h = img.size
-        win_w, win_h = win.size
-        
-        # scale to fit screen
-        scale = min(win_w / img_w, win_h / img_h) * 0.95
-        img.size = (img_w * scale, img_h * scale)
-        
-        images.append(img)
+        orig_w, orig_h = img.size
+        scale = PANEL_W / orig_w
+        scaled_h = orig_h * scale
+        img.size = (PANEL_W, scaled_h)
+        page_stims.append(img)
+        page_heights.append(scaled_h)
 
-    page = 0
-
-    instruction = visual.TextStim(
+    # ── Aperture to clip image inside the panel ───────────────────────────────
+    aperture = visual.Aperture(
         win,
-        text="Left/Right to navigate, SPACE to continue",
-        pos=(0, -win.size[1]/2 + 30),
-        height=24,
-        color="black"
+        size=(PANEL_W, PANEL_H),
+        pos=(0, PANEL_CY),
+        shape="square",
+        units="pix"
+    )
+    aperture.disable()
+
+    # ── Static UI elements ────────────────────────────────────────────────────
+    title_stim = visual.TextStim(
+        win,
+        text=title_text,
+        pos=(0, 500),
+        color=[0.94, 0.75, 0.25],
+        height=40,
+        bold=True,
+        wrapWidth=1200
     )
 
-    counter = visual.TextStim(
+    page_counter = visual.TextStim(
         win,
         text="",
-        pos=(0, win.size[1]/2 - 40),
-        height=28,
-        color="black"
+        pos=(0, 450),
+        color=[0.7, 0.7, 0.6],
+        height=26,
+        wrapWidth=1200
     )
 
+    hint_last = visual.TextStim(
+        win,
+        text="\u25c0 BACK   |   SPACE to continue",
+        pos=(0, PANEL_BOT - 45),
+        color=[0.6, 0.6, 0.6],
+        height=24
+    )
+
+    hint_mid = visual.TextStim(
+        win,
+        text="\u25c0 BACK   |   NEXT \u25b6",
+        pos=(0, PANEL_BOT - 45),
+        color=[0.6, 0.6, 0.6],
+        height=24
+    )
+
+    hint_first = visual.TextStim(
+        win,
+        text="NEXT \u25b6",
+        pos=(0, PANEL_BOT - 45),
+        color=[0.6, 0.6, 0.6],
+        height=24
+    )
+
+    scroll_hint = visual.TextStim(
+        win,
+        text="\u25b2 \u25bc to scroll",
+        pos=(0, PANEL_BOT - 80),
+        color=[0.7, 0.7, 0.5],
+        height=22
+    )
+
+    bar_track = visual.Rect(
+        win,
+        width=10,
+        height=PANEL_H,
+        pos=(PANEL_W / 2 + 25, PANEL_CY),
+        fillColor=[-0.6, -0.6, -0.5],
+        lineWidth=0
+    )
+
+    cur_page = 0
+    scroll_y = 0
+
+    event.clearEvents()
+
     while True:
-        images[page].draw()
-        
-        counter.text = f"Page {page+1} / {len(images)}"
-        counter.draw()
-        instruction.draw()
-        
+        scaled_h = page_heights[cur_page]
+        max_scroll = max(0, scaled_h - PANEL_H)
+
+        # ── Keyboard input ────────────────────────────────────────────────────
+        keys = event.getKeys([
+            "up", "down", "left", "right", "n", "p",
+            "space", "return", "escape"
+        ])
+
+        for k in keys:
+            if k == "escape":
+                aperture.disable()
+                win.close()
+                core.quit()
+
+            elif k == "up":
+                scroll_y = max(0, scroll_y - SCROLL_STEP)
+
+            elif k == "down":
+                scroll_y = min(max_scroll, scroll_y + SCROLL_STEP)
+
+            elif k in ("right", "n"):
+                if cur_page < n_pages - 1:
+                    cur_page += 1
+                    scroll_y = 0
+
+            elif k in ("left", "p"):
+                if cur_page > 0:
+                    cur_page -= 1
+                    scroll_y = 0
+
+            elif k in ("space", "return"):
+                if cur_page == n_pages - 1:
+                    aperture.disable()
+                    win.mouseVisible = False
+                    return
+                else:
+                    cur_page += 1
+                    scroll_y = 0
+
+        # ── Mouse wheel input ─────────────────────────────────────────────────
+        wheel_delta = mouse.getWheelRel()[1]
+        if wheel_delta != 0:
+            # wheel up = move toward top, wheel down = move toward bottom
+            scroll_y = max(0, min(max_scroll, scroll_y - wheel_delta * SCROLL_STEP))
+
+        # ── Draw page ─────────────────────────────────────────────────────────
+        # At scroll_y = 0, the image top is aligned with PANEL_TOP.
+        # As scroll_y increases, the image moves UP, revealing the bottom.
+        img_centre_y = PANEL_TOP - (scaled_h / 2) + scroll_y
+        page_stims[cur_page].pos = (0, img_centre_y)
+
+        aperture.enable()
+        page_stims[cur_page].draw()
+        aperture.disable()
+
+        title_stim.draw()
+        page_counter.text = f"Page {cur_page + 1} of {n_pages}"
+        page_counter.draw()
+
+        if n_pages == 1 or cur_page == n_pages - 1:
+            hint_last.draw()
+        elif cur_page == 0:
+            hint_first.draw()
+        else:
+            hint_mid.draw()
+
+        if max_scroll > 0:
+            bar_track.draw()
+            frac = scroll_y / max_scroll
+            bar_h = max(40, PANEL_H * (PANEL_H / scaled_h))
+            bar_y = PANEL_TOP - bar_h / 2 - frac * (PANEL_H - bar_h)
+
+            scroll_bar = visual.Rect(
+                win,
+                width=10,
+                height=bar_h,
+                pos=(PANEL_W / 2 + 25, bar_y),
+                fillColor=[0.94, 0.75, 0.25],
+                lineWidth=0
+            )
+            scroll_bar.draw()
+            scroll_hint.draw()
+
         win.flip()
 
-        keys = event.waitKeys(keyList=["left", "right", "space", "escape"])
+# ── Information sheet PNG pages ───────────────────────────────────────────────
+# Convert InformationSheet_VST.pdf to PNGs (one per page) and place them in
+# the same folder as this script. Update the filenames below if needed.
+INFO_SHEET_PAGES = [
+    "InformationSheet_VST_p1.png",
+    "InformationSheet_VST_p2.png",
+    "InformationSheet_VST_p3.png",
+]
 
-        if "right" in keys:
-            page = min(page + 1, len(images) - 1)
-        elif "left" in keys:
-            page = max(page - 1, 0)
-        elif "space" in keys:
-            break
-        elif "escape" in keys:
-            core.quit()
+# ── Consent form PNG page ─────────────────────────────────────────────────────
+CONSENT_FORM_PAGES = [
+    "ConsentForm_VSI.png",
+]
+
+# ── Consent form items ────────────────────────────────────────────────────────
+CONSENT_ITEMS = [
+    'I have read the accompanying Information Sheet for this study.',
+    'I understand the purposes of the study and what will be required of me. '
+    'Any questions I have had have been answered to my satisfaction.',
+    'I understand what information will be collected about me, what it will be '
+    'used for, who it may be shared with, how it will be kept safe, and my '
+    'rights in relation to my data.',
+    'I understand that participation is voluntary and that I may withdraw at '
+    'any time without penalty.',
+    'I understand that anonymised data from this study may be shared and reused '
+    'by other researchers.',
+    'I understand that the data collected will be securely stored and may be '
+    'accessed by authenticated researchers.',
+    'This project has received favourable ethical approval from the University '
+    'Research Ethics Committee.',
+    'I confirm that I have received a copy of the Information Sheet and consent '
+    'to participate.',
+]
+
+# ── Consent screen with mouse-clickable checkboxes ───────────────────────────
+def show_consent_form():
+    """
+    Display all consent items with clickable checkboxes.
+    The 'I Agree' button is only enabled once all boxes are ticked.
+    Returns when the participant clicks 'I Agree'.
+    """
+    win.mouseVisible = True
+    mouse = event.Mouse(win=win)
+
+    N          = len(CONSENT_ITEMS)
+    BOX_SIZE   = 22
+    ROW_H      = 60           # vertical space per item
+    TEXT_X     = -390         # left edge of item text
+    BOX_X      = -440         # centre of checkbox square
+    START_Y    = 220          # y of first row centre
+    SCROLL_STEP = 50
+    VISIBLE_H  = 520
+
+    checked    = [False] * N
+    scroll_y   = 0
+    max_scroll = max(0, N * ROW_H - VISIBLE_H)
+
+    # Pre-build text stims for each item (pos updated each frame)
+    item_stims = []
+    for item in CONSENT_ITEMS:
+        stim = visual.TextStim(
+            win, text=item,
+            pos=(0, 0), color="white",
+            height=20, wrapWidth=740,
+            alignText="left", anchorHoriz="left", anchorVert="center"
+        )
+        item_stims.append(stim)
+
+    title_stim = visual.TextStim(
+        win, text="Consent Form",
+        pos=(0, 345), color=[0.94, 0.75, 0.25],
+        height=36, bold=True
+    )
+    subtitle_stim = visual.TextStim(
+        win, text="Please tick all boxes to confirm your agreement, then click 'I Agree'.",
+        pos=(0, 295), color=[0.8, 0.8, 0.8], height=22, wrapWidth=900
+    )
+
+    # 'I Agree' button
+    btn_rect = visual.Rect(win, width=200, height=50,
+                           pos=(0, -360), lineWidth=2)
+    btn_text = visual.TextStim(win, text="I Agree", pos=(0, -360),
+                               height=26, bold=True)
+
+    prev_buttons = mouse.getPressed()
+    prev_wheel   = mouse.getWheelRel()[1]
+
+    while True:
+        all_checked = all(checked)
+
+        # ── input ─────────────────────────────────────────────────────────────
+        keys = event.getKeys(["up", "down", "escape"])
+        for k in keys:
+            if k == "escape":
+                win.close(); core.quit()
+            if k == "up":
+                scroll_y = max(0, scroll_y - SCROLL_STEP)
+            if k == "down":
+                scroll_y = min(max_scroll, scroll_y + SCROLL_STEP)
+
+        cur_wheel = mouse.getWheelRel()[1]
+        delta = cur_wheel - prev_wheel
+        if delta != 0:
+            scroll_y = max(0, min(max_scroll, scroll_y + delta * SCROLL_STEP))
+        prev_wheel = cur_wheel
+
+        cur_buttons = mouse.getPressed()
+        just_clicked = cur_buttons[0] and not prev_buttons[0]
+        prev_buttons = cur_buttons
+
+        if just_clicked:
+            mx, my = mouse.getPos()
+
+            # Check checkbox hits
+            for i in range(N):
+                row_y = START_Y - i * ROW_H + scroll_y
+                if abs(mx - BOX_X) < BOX_SIZE and abs(my - row_y) < BOX_SIZE:
+                    checked[i] = not checked[i]
+
+            # Check 'I Agree' button
+            if all_checked and abs(mx) < 100 and abs(my - (-360)) < 25:
+                win.mouseVisible = False
+                return
+
+        # ── draw ──────────────────────────────────────────────────────────────
+        # Background panel
+        bg = visual.Rect(win, width=920, height=VISIBLE_H,
+                         pos=(0, 0),
+                         fillColor=[-0.9, -0.9, -0.8],
+                         lineColor=[-0.5, -0.5, -0.4], lineWidth=2)
+        bg.draw()
+
+        for i in range(N):
+            row_y = START_Y - i * ROW_H + scroll_y
+
+            # Only draw rows within the visible band
+            if row_y < -VISIBLE_H / 2 - ROW_H or row_y > VISIBLE_H / 2 + ROW_H:
+                continue
+
+            # Checkbox border
+            box = visual.Rect(win, width=BOX_SIZE, height=BOX_SIZE,
+                              pos=(BOX_X, row_y),
+                              fillColor=[-0.7, -0.7, -0.6],
+                              lineColor=[0.8, 0.8, 0.8], lineWidth=2)
+            box.draw()
+
+            # Tick mark
+            if checked[i]:
+                tick = visual.TextStim(win, text="✓", pos=(BOX_X, row_y),
+                                       color=[0.3, 0.9, 0.3], height=20, bold=True)
+                tick.draw()
+
+            # Item text
+            item_stims[i].pos = (TEXT_X, row_y)
+            item_stims[i].draw()
+
+        # Cover overflow above and below
+        for cover_y, cover_h in [(320, 160), (-290, 120)]:
+            cover = visual.Rect(win, width=1280, height=cover_h,
+                                pos=(0, cover_y),
+                                fillColor=[-0.85, -0.85, -0.6],
+                                lineWidth=0)
+            cover.draw()
+
+        title_stim.draw()
+        subtitle_stim.draw()
+
+        # Scroll indicator
+        if max_scroll > 0:
+            frac     = scroll_y / max_scroll
+            bar_y    = VISIBLE_H / 2 - frac * VISIBLE_H
+            bar_stim = visual.Rect(win, width=6, height=40,
+                                   pos=(470, bar_y),
+                                   fillColor=[0.94, 0.75, 0.25])
+            bar_stim.draw()
+            scroll_hint = visual.TextStim(
+                win, text="▲ ▼ to scroll",
+                pos=(0, -270), color=[0.7, 0.7, 0.5], height=20
+            )
+            scroll_hint.draw()
+
+        # 'I Agree' button — greyed out until all boxes ticked
+        if all_checked:
+            btn_rect.fillColor  = [0.94, 0.75, 0.25]
+            btn_rect.lineColor  = [0.94, 0.75, 0.25]
+            btn_text.color      = [-0.85, -0.85, -0.6]
+        else:
+            btn_rect.fillColor  = [-0.6, -0.6, -0.5]
+            btn_rect.lineColor  = [-0.3, -0.3, -0.2]
+            btn_text.color      = [-0.2, -0.2, -0.1]
+
+        btn_rect.draw()
+        btn_text.draw()
+
+        win.flip()
+
 
 # ── Welcome ───────────────────────────────────────────────────────────────────
 show_text(
     "Iowa Gambling Task\n\n"
     "Welcome to this experiment.\n\n"
-    "Press SPACE to read the instructions.",
+    "Press SPACE to continue.",
     wait_for_key=True
 )
 
-# ── Information sheet image ───────────────────────────────────────────────────
-info_pages = [
-    "InformationSheet_VST_page1.png",
-    "InformationSheet_VST_page2.png",
-    "InformationSheet_VST_page3.png"
-]
+# ── Information sheet ─────────────────────────────────────────────────────────
+show_pdf_pages(
+    image_paths=INFO_SHEET_PAGES,
+    title_text="Participant Information Sheet"
+)
 
-show_image_pages(info_pages)
+
+# ── Consent form ──────────────────────────────────────────────────────────────
+show_pdf_pages(
+    image_paths=CONSENT_FORM_PAGES,
+    title_text="Consent Form"
+)
+
+show_consent_form()
 
 # ── Instructions ──────────────────────────────────────────────────────────────
 show_text(
@@ -332,7 +686,6 @@ for trial_num in range(1, TOTAL_TRIALS + 1):
     
     deck_number = list(KEY_MAP.keys())[list(KEY_MAP.values()).index(chosen_deck)]
     fb_lines = [f"You chose Deck {deck_number}"]
-    fb_lines = [f"You chose Deck {deck_number}"]
     fb_lines.append(f"\n\nYou won: +${win_amt:,}")
     if loss_amt > 0:
         fb_lines.append(f"\n\nYou lost:  -${loss_amt:,}")
@@ -351,14 +704,394 @@ for trial_num in range(1, TOTAL_TRIALS + 1):
     send_marker(MARKER_TRIAL_END)
     win.flip()
     core.wait(ITI_DURATION)
-
-# ── End screen ────────────────────────────────────────────────────────────────
+    
+# ── End task screen ────────────────────────────────────────────────────────────────
 show_text(
     f"Task complete!\n\n"
     f"Final balance: ${total_money:,}\n\n"
-    f"Your data has been saved.\n"
+    f"Your data has been saved.\n\n"
+    f"Press SPACE to continue.",
+    wait_for_key=True
+)
+
+# ── HSPS questionnaire ────────────────────────────────────────────────────────
+HSPS_ITEMS = [
+    "Are you easily overwhelmed by strong sensory input?",
+    "Do you seem to be aware of subtleties in your environment?",
+    "Do other people's moods affect you?",
+    "Do you tend to be more sensitive to pain?",
+    "Do you find yourself needing to withdraw during busy days, into bed or into a darkened room or any place where you can have some privacy and relief from stimulation?",
+    "Are you particularly sensitive to the effects of caffeine?",
+    "Are you easily overwhelmed by things like bright lights, strong smells, coarse fabrics, or sirens close by?",
+    "Do you have a rich, complex inner life?",
+    "Are you made uncomfortable by loud noises?",
+    "Are you deeply moved by the arts or music?",
+    "Does your nervous system sometimes feel so frazzled that you just have to go off by yourself?",
+    "Are you conscientious?",
+    "Do you startle easily?",
+    "Do you get rattled when you have a lot to do in a short amount of time?",
+    "When people are uncomfortable in a physical environment, do you tend to know what needs to be done to make it more comfortable (like changing the lighting or the seating)?",
+    "Are you annoyed when people try to get you to do too many things at once?",
+    "Do you try hard to avoid making mistakes or forgetting things?",
+    "Do you make a point to avoid violent movies and TV shows?",
+    "Do you become unpleasantly aroused when a lot is going on around you?",
+    "Does being very hungry create a strong reaction in you, disrupting your concentration or mood?",
+    "Do changes in your life shake you up?",
+    "Do you notice and enjoy delicate or fine scents, tastes, sounds, works of art?",
+    "Do you find it unpleasant to have a lot going on at once?",
+    "Do you make it a high priority to arrange your life to avoid upsetting or overwhelming situations?",
+    "Are you bothered by intense stimuli, like loud noises or chaotic scenes?",
+    "When you must compete or be observed while performing a task, do you become so nervous or shaky that you do much worse than you would otherwise?",
+    "When you were a child, did parents or teachers seem to see you as sensitive or shy?"
+]
+
+HSPS_LABELS = [
+    "Strongly disagree",
+    "Disagree",
+    "Neither agree nor disagree",
+    "Agree",
+    "Strongly agree"
+]
+
+def run_hsps_questionnaire():
+    win.mouseVisible = True
+    mouse = event.Mouse(win=win)
+
+    intro_text = (
+        "Questionnaire 1\n\n"
+        "A number of statements which people have used to describe themselves "
+        "are given below. Read each statement and then select the response "
+        "that indicates how you generally feel.\n\n"
+        "There are no right or wrong answers. Do not spend too much time on "
+        "any one statement, but give the answer which seems to describe how "
+        "you generally feel.\n\n"
+        "Thank you.\n\n"
+        "Press SPACE to begin."
+    )
+
+    show_text(intro_text, wait_for_key=True)
+
+    for q_num, item in enumerate(HSPS_ITEMS, start=1):
+        selected = None
+        mouse.clickReset()
+        event.clearEvents()
+
+        question_stim = visual.TextStim(
+            win,
+            text=item,
+            pos=(0, 250),
+            color="white",
+            height=30,
+            wrapWidth=1400,
+            alignText="center"
+        )
+
+        instruction_stim = visual.TextStim(
+            win,
+            text="Click one response below",
+            pos=(0, 140),
+            color=[0.8, 0.8, 0.8],
+            height=24
+        )
+
+        item_number_stim = visual.TextStim(
+            win,
+            text=f"Item {q_num} of {len(HSPS_ITEMS)}",
+            pos=(0, 470),
+            color=[0.7, 0.7, 0.6],
+            height=24
+        )
+
+        scale_width = 1200
+        start_x = -scale_width / 2
+        step_x = scale_width / (len(HSPS_LABELS) - 1)
+        y_anchor = -20
+
+        option_circles = []
+        option_labels = []
+
+        for i, lab in enumerate(HSPS_LABELS):
+            x = start_x + i * step_x
+
+            circle = visual.Circle(
+                win,
+                radius=18,
+                pos=(x, y_anchor + 50),
+                fillColor=None,
+                lineColor="white",
+                lineWidth=3
+            )
+            option_circles.append(circle)
+
+            label = visual.TextStim(
+                win,
+                text=lab,
+                pos=(x, y_anchor - 20),
+                color="white",
+                height=20,
+                wrapWidth=180,
+                alignText="center"
+            )
+            option_labels.append(label)
+
+        while selected is None:
+            keys = event.getKeys(["escape"])
+            if "escape" in keys:
+                core.quit()
+
+            question_stim.draw()
+            instruction_stim.draw()
+            item_number_stim.draw()
+
+            for i, circle in enumerate(option_circles):
+                if selected == i + 1:
+                    circle.fillColor = [0.94, 0.75, 0.25]
+                else:
+                    circle.fillColor = None
+
+                circle.draw()
+                option_labels[i].draw()
+
+            win.flip()
+
+            buttons, times = mouse.getPressed(getTime=True)
+            if buttons[0]:
+                for i, circle in enumerate(option_circles):
+                    if circle.contains(mouse):
+                        selected = i + 1
+                        break
+
+                while any(mouse.getPressed()):
+                    core.wait(0.01)
+
+        question_stim.draw()
+        instruction_stim.draw()
+        item_number_stim.draw()
+
+        for i, circle in enumerate(option_circles):
+            if selected == i + 1:
+                circle.fillColor = [0.94, 0.75, 0.25]
+            else:
+                circle.fillColor = None
+            circle.draw()
+            option_labels[i].draw()
+
+        win.flip()
+        core.wait(0.2)
+
+        append_trial({
+            "participant_id": participant_id,
+            "age": age,
+            "gender": gender,
+            "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+
+            "trial_number": "",
+            "card_selected": "",
+            "total_before": "",
+            "amount_won": "",
+            "amount_lost": "",
+            "net_change": "",
+            "loss_occurred": "",
+            "total_after": "",
+            "reaction_time_ms": "",
+
+            "questionnaire": "HSPS",
+            "question_number": q_num,
+            "question_text": item,
+            "response_value": selected,
+            "response_label": HSPS_LABELS[selected - 1]
+        })
+
+        event.clearEvents()
+
+    win.mouseVisible = False
+    
+# ── run HSPS questionnaire ────────────────────────────────────────────────────────
+run_hsps_questionnaire()
+
+# ── IUS questionnaire ────────────────────────────────────────────────────────
+IUS_ITEMS = [
+    "Unforeseen events upset me greatly.",
+    "It frustrates me not having all the information I need.",
+    "Uncertainty keeps me from living a full life.",
+    "One should always look ahead so as to avoid surprises.",
+    "A small unforeseen event can spoil everything, even with the best of planning.",
+    "When it's time to act, uncertainty paralyses me.",
+    "When I am uncertain I can't function very well.",
+    "I always want to know what the future has in store for me.",
+    "I can't stand being taken by surprise.",
+    "The smallest doubt can stop me from acting.",
+    "Please select 'A little characteristic of me'.",
+    "I should be able to organise everything in advance.",
+    "I must get away from all uncertain situations."
+]
+
+IUS_LABELS = [
+    "Not at all characteristic of me",
+    "A little characteristic of me",
+    "Somewhat characteristic of me",
+    "Very characteristic of me",
+    "Entirely characteristic of me"
+]
+
+def run_ius_questionnaire():
+    win.mouseVisible = True
+    mouse = event.Mouse(win=win)
+
+    intro_text = (
+        "Questionnaire 2\n\n"
+        "You will find below a series of statements which describe how people "
+        "may react to the uncertainties of life.\n\n"
+        "Please use the scale below to describe to what extent each item is "
+        "characteristic of you.\n\n"
+        "Press SPACE to begin."
+    )
+
+    show_text(intro_text, wait_for_key=True)
+
+    for q_num, item in enumerate(IUS_ITEMS, start=1):
+        selected = None
+        mouse.clickReset()
+        event.clearEvents()
+
+        question_stim = visual.TextStim(
+            win,
+            text=item,
+            pos=(0, 250),
+            color="white",
+            height=30,
+            wrapWidth=1400,
+            alignText="center"
+        )
+
+        instruction_stim = visual.TextStim(
+            win,
+            text="Click one response below",
+            pos=(0, 140),
+            color=[0.8, 0.8, 0.8],
+            height=24
+        )
+
+        item_number_stim = visual.TextStim(
+            win,
+            text=f"Item {q_num} of {len(IUS_ITEMS)}",
+            pos=(0, 470),
+            color=[0.7, 0.7, 0.6],
+            height=24
+        )
+
+        scale_width = 1400
+        start_x = -scale_width / 2
+        step_x = scale_width / (len(IUS_LABELS) - 1)
+        y_anchor = -20
+
+        option_circles = []
+        option_labels = []
+
+        for i, lab in enumerate(IUS_LABELS):
+            x = start_x + i * step_x
+
+            circle = visual.Circle(
+                win,
+                radius=18,
+                pos=(x, y_anchor + 50),
+                fillColor=None,
+                lineColor="white",
+                lineWidth=3
+            )
+            option_circles.append(circle)
+
+            label = visual.TextStim(
+                win,
+                text=lab,
+                pos=(x, y_anchor - 20),
+                color="white",
+                height=20,
+                wrapWidth=220,
+                alignText="center"
+            )
+            option_labels.append(label)
+
+        while selected is None:
+            keys = event.getKeys(["escape"])
+            if "escape" in keys:
+                core.quit()
+
+            question_stim.draw()
+            instruction_stim.draw()
+            item_number_stim.draw()
+
+            for i, circle in enumerate(option_circles):
+                if selected == i + 1:
+                    circle.fillColor = [0.94, 0.75, 0.25]
+                else:
+                    circle.fillColor = None
+
+                circle.draw()
+                option_labels[i].draw()
+
+            win.flip()
+
+            buttons, times = mouse.getPressed(getTime=True)
+            if buttons[0]:
+                for i, circle in enumerate(option_circles):
+                    if circle.contains(mouse):
+                        selected = i + 1
+                        break
+
+                while any(mouse.getPressed()):
+                    core.wait(0.01)
+
+        question_stim.draw()
+        instruction_stim.draw()
+        item_number_stim.draw()
+
+        for i, circle in enumerate(option_circles):
+            if selected == i + 1:
+                circle.fillColor = [0.94, 0.75, 0.25]
+            else:
+                circle.fillColor = None
+            circle.draw()
+            option_labels[i].draw()
+
+        win.flip()
+        core.wait(0.2)
+
+        append_trial({
+            "participant_id": participant_id,
+            "age": age,
+            "gender": gender,
+            "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+
+            "trial_number": "",
+            "card_selected": "",
+            "total_before": "",
+            "amount_won": "",
+            "amount_lost": "",
+            "net_change": "",
+            "loss_occurred": "",
+            "total_after": "",
+            "reaction_time_ms": "",
+
+            "questionnaire": "IUS",
+            "question_number": q_num,
+            "question_text": item,
+            "response_value": selected,
+            "response_label": IUS_LABELS[selected - 1]
+        })
+
+        event.clearEvents()
+
+    win.mouseVisible = False
+
+# ── run IUS questionnaire ────────────────────────────────────────────────────────
+run_ius_questionnaire()
+
+# ── End Experiment screen ────────────────────────────────────────────────────────────────
+show_text(
+    f"You have reached the end of the experiment.\n\n"
     f"Thank you for participating.\n\n"
-    f"Press SPACE to exit.",
+    f"Press SPACE to continue.",
     wait_for_key=True
 )
 

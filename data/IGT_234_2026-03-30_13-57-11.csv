@@ -1,0 +1,31 @@
+participant_id,age,gender,date,trial_number,card_selected,total_before,amount_won,amount_lost,net_change,loss_occurred,total_after,reaction_time_ms,questionnaire,question_number,question_text,response_value,response_label
+234,33,Male,2026-03-30 13:57:27,1,D,2000,50,0,50,0,2050,1067,,,,,
+234,33,Male,2026-03-30 13:57:33,2,C,2050,50,75,-25,1,2025,683,,,,,
+234,33,Male,2026-03-30 13:57:39,3,B,2025,100,0,100,0,2125,533,,,,,
+234,33,Male,2026-03-30 13:57:57,,,,,,,,,,HSPS,1,Are you easily overwhelmed by strong sensory input?,3,Neither agree nor disagree
+234,33,Male,2026-03-30 13:58:01,,,,,,,,,,HSPS,2,Do you seem to be aware of subtleties in your environment?,3,Neither agree nor disagree
+234,33,Male,2026-03-30 13:58:03,,,,,,,,,,HSPS,3,Do other people's moods affect you?,3,Neither agree nor disagree
+234,33,Male,2026-03-30 13:58:04,,,,,,,,,,HSPS,4,Do you tend to be more sensitive to pain?,3,Neither agree nor disagree
+234,33,Male,2026-03-30 13:58:05,,,,,,,,,,HSPS,5,"Do you find yourself needing to withdraw during busy days, into bed or into a darkened room or any place where you can have some privacy and relief from stimulation?",3,Neither agree nor disagree
+234,33,Male,2026-03-30 13:58:05,,,,,,,,,,HSPS,6,Are you particularly sensitive to the effects of caffeine?,3,Neither agree nor disagree
+234,33,Male,2026-03-30 13:58:06,,,,,,,,,,HSPS,7,"Are you easily overwhelmed by things like bright lights, strong smells, coarse fabrics, or sirens close by?",3,Neither agree nor disagree
+234,33,Male,2026-03-30 13:58:07,,,,,,,,,,HSPS,8,"Do you have a rich, complex inner life?",3,Neither agree nor disagree
+234,33,Male,2026-03-30 13:58:08,,,,,,,,,,HSPS,9,Are you made uncomfortable by loud noises?,3,Neither agree nor disagree
+234,33,Male,2026-03-30 13:58:08,,,,,,,,,,HSPS,10,Are you deeply moved by the arts or music?,3,Neither agree nor disagree
+234,33,Male,2026-03-30 13:58:09,,,,,,,,,,HSPS,11,Does your nervous system sometimes feel so frazzled that you just have to go off by yourself?,3,Neither agree nor disagree
+234,33,Male,2026-03-30 13:58:10,,,,,,,,,,HSPS,12,Are you conscientious?,3,Neither agree nor disagree
+234,33,Male,2026-03-30 13:58:10,,,,,,,,,,HSPS,13,Do you startle easily?,3,Neither agree nor disagree
+234,33,Male,2026-03-30 13:58:11,,,,,,,,,,HSPS,14,Do you get rattled when you have a lot to do in a short amount of time?,3,Neither agree nor disagree
+234,33,Male,2026-03-30 13:58:12,,,,,,,,,,HSPS,15,"When people are uncomfortable in a physical environment, do you tend to know what needs to be done to make it more comfortable (like changing the lighting or the seating)?",3,Neither agree nor disagree
+234,33,Male,2026-03-30 13:58:12,,,,,,,,,,HSPS,16,Are you annoyed when people try to get you to do too many things at once?,3,Neither agree nor disagree
+234,33,Male,2026-03-30 13:58:13,,,,,,,,,,HSPS,17,Do you try hard to avoid making mistakes or forgetting things?,3,Neither agree nor disagree
+234,33,Male,2026-03-30 13:58:14,,,,,,,,,,HSPS,18,Do you make a point to avoid violent movies and TV shows?,3,Neither agree nor disagree
+234,33,Male,2026-03-30 13:58:15,,,,,,,,,,HSPS,19,Do you become unpleasantly aroused when a lot is going on around you?,3,Neither agree nor disagree
+234,33,Male,2026-03-30 13:58:15,,,,,,,,,,HSPS,20,"Does being very hungry create a strong reaction in you, disrupting your concentration or mood?",3,Neither agree nor disagree
+234,33,Male,2026-03-30 13:58:16,,,,,,,,,,HSPS,21,Do changes in your life shake you up?,3,Neither agree nor disagree
+234,33,Male,2026-03-30 13:58:17,,,,,,,,,,HSPS,22,"Do you notice and enjoy delicate or fine scents, tastes, sounds, works of art?",3,Neither agree nor disagree
+234,33,Male,2026-03-30 13:58:17,,,,,,,,,,HSPS,23,Do you find it unpleasant to have a lot going on at once?,3,Neither agree nor disagree
+234,33,Male,2026-03-30 13:58:18,,,,,,,,,,HSPS,24,Do you make it a high priority to arrange your life to avoid upsetting or overwhelming situations?,3,Neither agree nor disagree
+234,33,Male,2026-03-30 13:58:19,,,,,,,,,,HSPS,25,"Are you bothered by intense stimuli, like loud noises or chaotic scenes?",3,Neither agree nor disagree
+234,33,Male,2026-03-30 13:58:19,,,,,,,,,,HSPS,26,"When you must compete or be observed while performing a task, do you become so nervous or shaky that you do much worse than you would otherwise?",3,Neither agree nor disagree
+234,33,Male,2026-03-30 13:58:20,,,,,,,,,,HSPS,27,"When you were a child, did parents or teachers seem to see you as sensitive or shy?",3,Neither agree nor disagree

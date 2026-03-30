@@ -1,0 +1,4 @@
+participant_id,age,gender,date,trial_number,card_selected,total_before,amount_won,amount_lost,net_change,loss_occurred,total_after,reaction_time_ms
+44,33,,2026-03-30 13:52:13,1,D,2000,50,0,50,0,2050,1517
+44,33,,2026-03-30 13:52:19,2,C,2050,50,0,50,0,2100,417
+44,33,,2026-03-30 13:52:24,3,C,2100,50,0,50,0,2150,483
