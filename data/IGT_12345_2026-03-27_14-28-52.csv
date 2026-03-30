@@ -1,3 +1,0 @@
-participant_id,age,gender,date,trial_number,card_selected,total_before,amount_won,amount_lost,net_change,loss_occurred,total_after,reaction_time_ms
-12345,34,Female,2026-03-27 14:29:19,1,A,2000,100,0,100,0,2100,1655
-12345,34,Female,2026-03-27 14:29:25,2,B,2100,100,0,100,0,2200,652
