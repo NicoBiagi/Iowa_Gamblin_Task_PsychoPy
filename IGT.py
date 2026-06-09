@@ -15,37 +15,46 @@ import random
 import time
 from datetime import datetime
 
-from psychopy import visual, core, event, gui
+from psychopy import visual, core, event, gui, parallel
+import numpy as np
+import pandas as pd
+import sys
+import random
+import psychopy.event
 
-# ── Optional: serial port for LabChart markers ────────────────────────────────
-# Set USE_LABCHART = True when running with ADInstruments hardware.
-# Markers are sent as single bytes over a serial (COM/USB) port.
-# Install pyserial if needed:  pip install pyserial
-USE_LABCHART = False
-SERIAL_PORT  = "COM3"      # Windows: "COM3", Mac/Linux: "/dev/tty.usbserial-XXXX"
-BAUD_RATE    = 9600
+## ── Parallel port for LabChart markers ───────────────────────────────────────
+## Set USE_LABCHART = True when running with ADInstruments hardware.
+## Markers are sent via parallel port using PsychoPy's parallel module.
+USE_LABCHART   = False
+PORT_ADDRESS   = 0x03FF8   # parallel port address
 
-# Marker values (bytes sent to LabChart)
-MARKER_TRIAL_START    = 1   # sent at the start of each trial (cards on screen)
-MARKER_CARD_CHOSEN    = 2   # sent the moment participant presses a key
-MARKER_FEEDBACK_START = 3   # sent when feedback screen appears
-MARKER_TRIAL_END      = 4   # sent after the blank ITI, before next trial
+# Marker values written to parallel port data lines
+MARKER_TRIAL_START       = 1   # fixation cross onset — start of trial
+MARKER_DECK_ONSET        = 2   # decks appear on screen, response locked
+MARKER_DECK_RESPONSE_OPEN = 3  # response window opens, participant can choose
+MARKER_DECK_CHOSEN       = 4   # participant presses a key
+MARKER_FEEDBACK_ONSET    = 5   # feedback screen appears
+MARKER_FEEDBACK_OFFSET   = 6   # feedback clears, blank screen begins
+MARKER_TRIAL_END         = 7   # blank screen ends, trial over
+
+_port = None
 
 if USE_LABCHART:
     try:
-        import serial
-        ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
-        time.sleep(2)
-        print(f"LabChart serial port open: {SERIAL_PORT}")
+        _port = parallel.ParallelPort(address=PORT_ADDRESS)
+        _port.setData(0)
+        print(f"LabChart parallel port open: {hex(PORT_ADDRESS)}")
     except Exception as e:
-        print(f"WARNING: Could not open serial port ({e}). Running without LabChart.")
+        print(f"WARNING: Could not open parallel port ({e}). Running without LabChart.")
         USE_LABCHART = False
 
 def send_marker(marker_value):
-    """Send a single-byte marker to LabChart via serial."""
-    if USE_LABCHART:
+    """Write marker to parallel port data lines, then reset to 0 after 10 ms."""
+    if USE_LABCHART and _port is not None:
         try:
-            ser.write(bytes([marker_value]))
+            _port.setData(marker_value)
+            core.wait(0.010)
+            _port.setData(0)
         except Exception as e:
             print(f"Marker send error: {e}")
 
@@ -53,14 +62,14 @@ def send_marker(marker_value):
 dlg = gui.Dlg(title="Iowa Gambling Task")
 dlg.addField("Participant ID:")
 dlg.addField("Age:",    "")
-dlg.addField("Gender:", choices=["", "Male", "Female", "Non-binary", "Prefer not to say"])
+dlg.addField("Sex:", choices=["", "Male", "Female", "Prefer not to say"])
 info = dlg.show()
 if not dlg.OK:
     core.quit()
 
 participant_id = info[0].strip() or "P001"
 age            = info[1]
-gender         = info[2]
+sex         = info[2]
 date_str       = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
 # ── Output CSV ────────────────────────────────────────────────────────────────
@@ -69,7 +78,7 @@ os.makedirs(output_dir, exist_ok=True)
 csv_filename = os.path.join(output_dir, f"IGT_{participant_id}_{date_str}.csv")
 
 CSV_HEADERS = [
-    "participant_id", "age", "gender", "date",
+    "participant_id", "age", "sex", "date",
     "trial_number", "card_selected",
     "total_before", "amount_won", "amount_lost", "net_change",
     "loss_occurred", "total_after", "reaction_time_ms",
@@ -95,9 +104,12 @@ def append_trial(record):
 init_csv()
 
 # ── Task constants ────────────────────────────────────────────────────────────
-TOTAL_TRIALS   = 3
-STARTING_MONEY = 2000
-ITI_DURATION   = 1.0   # blank screen between trials (seconds)
+TOTAL_TRIALS          = 3
+STARTING_MONEY        = 2000
+FORCED_VIEW_DURATION  = 2.0   # seconds decks shown before response is allowed
+FEEDBACK_DURATION     = 2.0   # seconds feedback screen shown
+POST_FEEDBACK_BLANK   = 2.0   # seconds blank after feedback, before ITI
+ITI_DURATION          = 6.0   # blank fixation between trials (seconds)
 
 DECK_LABELS = ["A", "B", "C", "D"]
 KEY_MAP     = {"1": "A", "2": "B", "3": "C", "4": "D"}
@@ -599,7 +611,16 @@ def make_question(pos):
     return visual.TextStim(win, text="?", pos=pos,
                            color=[1, 1, 1], height=60, opacity=0.2)
 
-card_rects     = [make_card_rect(p)          for p in card_positions]
+def make_card_rect_highlighted(pos):
+    """Card rect with bright border — shown when response window opens."""
+    return visual.Rect(win, width=CARD_W, height=CARD_H,
+                       pos=pos, fillColor=[-0.6, -0.3, 0.3],
+                       lineColor=[0.94, 0.75, 0.25], lineWidth=6)
+
+card_rects_highlighted = [make_card_rect_highlighted(p) for p in card_positions]
+card_rects             = [make_card_rect(p)             for p in card_positions]
+
+
 card_numbers   = [make_number_label(p, i+1)  for i, p in enumerate(card_positions)]
 card_questions = [make_question(p)           for p in card_positions]
 
@@ -607,37 +628,55 @@ hud_balance = visual.TextStim(win, text="", pos=(0, 340),
                                color=[0.94, 0.75, 0.25], height=28, bold=True)
 prompt_text = visual.TextStim(win, text="Press 1, 2, 3 or 4 to choose a deck.",
                                pos=(0, -290), color=[0.8, 0.8, 0.8], height=24)
+fixation_cross = visual.TextStim(win, text="+", pos=(0, 0),
+                                  color="white", height=60, bold=True)
 
-def draw_cards(balance):
+def draw_cards(balance, highlighted=False):
     hud_balance.text = f"Balance: ${balance:,}"
     hud_balance.draw()
-    prompt_text.draw()
-    for rect, number, q in zip(card_rects, card_numbers, card_questions):
+    rects = card_rects_highlighted if highlighted else card_rects
+    for rect, number, q in zip(rects, card_numbers, card_questions):
         rect.draw()
         q.draw()
         number.draw()
+    if highlighted:
+        prompt_text.draw()
 
 # ── Main task loop ────────────────────────────────────────────────────────────
 total_money = STARTING_MONEY
+
+# Initial fixation cross before first trial
+fixation_cross.draw()
+win.flip()
+send_marker(MARKER_TRIAL_START)
+core.wait(ITI_DURATION)
 
 for trial_num in range(1, TOTAL_TRIALS + 1):
 
     if event.getKeys(["escape"]):
         break
 
-    # Flush any leftover keypresses before starting the trial
     event.clearEvents()
 
-    draw_cards(total_money)
+    # ── Deck onset: decks shown, response locked (2 s) ───────────────────────
+    draw_cards(total_money, highlighted=False)
     win.flip()
+    send_marker(MARKER_DECK_ONSET)
+    core.wait(FORCED_VIEW_DURATION)
 
-    send_marker(MARKER_TRIAL_START)
+    # Discard any keypresses made during the forced-view period
+    event.clearEvents()
+
+    # ── Response window opens: highlight decks, accept keypresses ─────────────
+    draw_cards(total_money, highlighted=True)
+    win.flip()
+    send_marker(MARKER_DECK_RESPONSE_OPEN)
+
     trial_clock = core.Clock()
-
     chosen_deck = None
 
     while chosen_deck is None:
-        draw_cards(total_money)
+        draw_cards(total_money, highlighted=True)
         win.flip()
 
         keys = event.getKeys(keyList=["1", "2", "3", "4", "escape"])
@@ -649,7 +688,7 @@ for trial_num in range(1, TOTAL_TRIALS + 1):
                 break
 
     reaction_time_ms = round(trial_clock.getTime() * 1000)
-    send_marker(MARKER_CARD_CHOSEN)
+    send_marker(MARKER_DECK_CHOSEN)
 
     # ── Compute outcome ───────────────────────────────────────────────────────
     idx     = deck_draw_count[chosen_deck]
@@ -667,7 +706,7 @@ for trial_num in range(1, TOTAL_TRIALS + 1):
     trial_record = {
         "participant_id":   participant_id,
         "age":              age,
-        "gender":           gender,
+        "sex":           sex,
         "date":             datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "trial_number":     trial_num,
         "card_selected":    chosen_deck,
@@ -681,9 +720,7 @@ for trial_num in range(1, TOTAL_TRIALS + 1):
     }
     append_trial(trial_record)
 
-    # ── Feedback screen ───────────────────────────────────────────────────────
-    send_marker(MARKER_FEEDBACK_START)
-    
+    # ── Feedback onset ────────────────────────────────────────────────────────
     deck_number = list(KEY_MAP.keys())[list(KEY_MAP.values()).index(chosen_deck)]
     fb_lines = [f"You chose Deck {deck_number}"]
     fb_lines.append(f"\n\nYou won: +${win_amt:,}")
@@ -698,12 +735,24 @@ for trial_num in range(1, TOTAL_TRIALS + 1):
     )
     fb_stim.draw()
     win.flip()
-    core.wait(4.0)
+    send_marker(MARKER_FEEDBACK_ONSET)
+    core.wait(FEEDBACK_DURATION)
 
-    # ── Blank ITI ─────────────────────────────────────────────────────────────
-    send_marker(MARKER_TRIAL_END)
+    # ── Feedback offset: blank screen ─────────────────────────────────────────
     win.flip()
-    core.wait(ITI_DURATION)
+    send_marker(MARKER_FEEDBACK_OFFSET)
+    core.wait(POST_FEEDBACK_BLANK)
+
+    # ── Trial end / ITI: fixation cross (skip after final trial) ─────────────
+    if trial_num < TOTAL_TRIALS:
+        fixation_cross.draw()
+        win.flip()
+        send_marker(MARKER_TRIAL_END)
+        # MARKER_TRIAL_START for next trial sent after fixation flip
+        send_marker(MARKER_TRIAL_START)
+        core.wait(ITI_DURATION)
+    else:
+        send_marker(MARKER_TRIAL_END)
     
 # ── End task screen ────────────────────────────────────────────────────────────────
 show_text(
@@ -746,166 +795,329 @@ HSPS_ITEMS = [
 ]
 
 HSPS_LABELS = [
-    "Strongly disagree",
-    "Disagree",
-    "Neither agree nor disagree",
-    "Agree",
-    "Strongly agree"
+    "1\nNot at all",
+    "2\nSlightly",
+    "3\nSomewhat",
+    "4\nModerately",
+    "5\nGood amount",
+    "6\nVery much",
+    "7\nExtremely"
 ]
 
-def run_hsps_questionnaire():
+def run_scrollable_questionnaire(q_name, items, labels, intro_text):
+    """
+    Display all items on one scrollable page.
+    Scale header is pinned at the top of the viewport.
+    A Submit button (bottom-right) activates once every item is answered.
+    Saves one CSV row per item after the participant submits.
+    """
     win.mouseVisible = True
     mouse = event.Mouse(win=win)
 
-    intro_text = (
-        "Questionnaire 1\n\n"
-        "A number of statements which people have used to describe themselves "
-        "are given below. Read each statement and then select the response "
-        "that indicates how you generally feel.\n\n"
-        "There are no right or wrong answers. Do not spend too much time on "
-        "any one statement, but give the answer which seems to describe how "
-        "you generally feel.\n\n"
-        "Thank you.\n\n"
-        "Press SPACE to begin."
-    )
-
     show_text(intro_text, wait_for_key=True)
 
-    for q_num, item in enumerate(HSPS_ITEMS, start=1):
-        selected = None
-        mouse.clickReset()
-        event.clearEvents()
+    # ── Layout constants ──────────────────────────────────────────────────────
+    # Screen is 1920×1080 (x: -960 to +960, y: -540 to +540).
+    N             = len(items)
+    N_OPTS        = len(labels)
+    ROW_H         = 46          # pixels per question row (smaller = more items visible)
+    # Question text: left portion of each row
+    Q_NUM_X       = -880        # right-anchor of "N." label
+    Q_TEXT_X      = -860        # left-anchor of question text
+    Q_TEXT_W      = 820         # wrap width — ends ~x=-40, clear of radio cols
+    Q_FONT_H      = 16          # question font size
+    COL_FONT_H    = 15          # header/label font size
+    CIRCLE_R      = 11          # radio button radius
+    # Radio columns: right half, kept well within ±960
+    COL_BAND_LEFT  =  -10       # x of leftmost column
+    COL_BAND_RIGHT =  880       # x of rightmost column
+    # Viewport: narrower than last time to create a contained panel feel
+    VIEWPORT_TOP  =  300
+    VIEWPORT_BOT  = -360
+    VIEWPORT_H    = VIEWPORT_TOP - VIEWPORT_BOT
+    SCROLL_STEP   = ROW_H * 2
+    HEADER_Y      =  370        # bottom-anchored header labels
+    TITLE_Y       =  460        # questionnaire title
 
-        question_stim = visual.TextStim(
-            win,
-            text=item,
-            pos=(0, 250),
-            color="white",
-            height=30,
-            wrapWidth=1400,
-            alignText="center"
-        )
+    # Column x positions
+    if N_OPTS > 1:
+        col_xs = [COL_BAND_LEFT + i * (COL_BAND_RIGHT - COL_BAND_LEFT) / (N_OPTS - 1)
+                  for i in range(N_OPTS)]
+    else:
+        col_xs = [(COL_BAND_LEFT + COL_BAND_RIGHT) / 2]
+    col_spacing = (COL_BAND_RIGHT - COL_BAND_LEFT) / max(N_OPTS - 1, 1)
 
-        instruction_stim = visual.TextStim(
-            win,
-            text="Click one response below",
-            pos=(0, 140),
-            color=[0.8, 0.8, 0.8],
-            height=24
-        )
+    # ── Pre-build all stimuli (positions updated each frame via scroll_y) ─────
+    responses = [None] * N   # selected option index (0-based) per item
 
-        item_number_stim = visual.TextStim(
-            win,
-            text=f"Item {q_num} of {len(HSPS_ITEMS)}",
-            pos=(0, 470),
-            color=[0.7, 0.7, 0.6],
-            height=24
-        )
+    # Question number + text stims
+    q_num_stims  = []
+    q_text_stims = []
+    for i, item in enumerate(items):
+        q_num_stims.append(visual.TextStim(
+            win, text=f"{i+1}.",
+            pos=(0, 0), color=[0.7, 0.7, 0.6],
+            height=Q_FONT_H, bold=True, anchorHoriz="right"
+        ))
+        q_text_stims.append(visual.TextStim(
+            win, text=item,
+            pos=(0, 0), color="white",
+            height=Q_FONT_H, wrapWidth=Q_TEXT_W,
+            alignText="left", anchorHoriz="left", anchorVert="center"
+        ))
 
-        scale_width = 1200
-        start_x = -scale_width / 2
-        step_x = scale_width / (len(HSPS_LABELS) - 1)
-        y_anchor = -20
-
-        option_circles = []
-        option_labels = []
-
-        for i, lab in enumerate(HSPS_LABELS):
-            x = start_x + i * step_x
-
-            circle = visual.Circle(
-                win,
-                radius=18,
-                pos=(x, y_anchor + 50),
+    # Radio circles (N rows × N_OPTS columns)
+    circles = []
+    for i in range(N):
+        row_circles = []
+        for j in range(N_OPTS):
+            row_circles.append(visual.Circle(
+                win, radius=CIRCLE_R,
+                pos=(0, 0),
                 fillColor=None,
-                lineColor="white",
-                lineWidth=3
+                lineColor="white", lineWidth=2
+            ))
+        circles.append(row_circles)
+
+    # Pinned column headers (drawn at fixed screen position)
+    header_stims = []
+    for j, lab in enumerate(labels):
+        header_stims.append(visual.TextStim(
+            win, text=lab,
+            pos=(col_xs[j], HEADER_Y),
+            color=[0.94, 0.75, 0.25],
+            height=COL_FONT_H, wrapWidth=max(int(col_spacing - 6), 60),
+            alignText="center", anchorHoriz="center", anchorVert="bottom"
+        ))
+
+    # Title
+    title_stim = visual.TextStim(
+        win, text=q_name,
+        pos=(0, TITLE_Y),
+        color=[0.94, 0.75, 0.25],
+        height=34, bold=True
+    )
+
+    # Scroll hint
+    scroll_hint_stim = visual.TextStim(
+        win, text="▲ ▼  or mouse wheel to scroll",
+        pos=(-700, VIEWPORT_BOT - 40),
+        color=[0.6, 0.6, 0.5], height=20,
+        anchorHoriz="left"
+    )
+
+    # Submit button (bottom-right)
+    btn_rect = visual.Rect(win, width=180, height=44,
+                           pos=(820, VIEWPORT_BOT - 50), lineWidth=2)
+    btn_text = visual.TextStim(win, text="Submit",
+                               pos=(820, VIEWPORT_BOT - 50),
+                               height=22, bold=True)
+
+    # Aperture to clip scrolling content
+    aperture = visual.Aperture(
+        win,
+        size=(1920, VIEWPORT_H),
+        pos=(0, (VIEWPORT_TOP + VIEWPORT_BOT) / 2),
+        shape="square", units="pix"
+    )
+    aperture.disable()
+
+    # Cover strips to hide content that scrolls past viewport edges
+    cover_top = visual.Rect(win, width=1920, height=250,
+                            pos=(0, VIEWPORT_TOP + 125),
+                            fillColor=[-0.85, -0.85, -0.6], lineWidth=0)
+    cover_bot = visual.Rect(win, width=1920, height=200,
+                            pos=(0, VIEWPORT_BOT - 100),
+                            fillColor=[-0.85, -0.85, -0.6], lineWidth=0)
+
+    # Scrollbar track
+    bar_track = visual.Rect(win, width=8, height=VIEWPORT_H,
+                            pos=(940, (VIEWPORT_TOP + VIEWPORT_BOT) / 2),
+                            fillColor=[-0.6, -0.6, -0.5], lineWidth=0)
+
+    # Scroll hint
+    scroll_hint_stim = visual.TextStim(
+        win, text="▲ ▼  or mouse wheel to scroll",
+        pos=(-880, VIEWPORT_BOT - 50),
+        color=[0.6, 0.6, 0.5], height=18,
+        anchorHoriz="left"
+    )
+
+    scroll_y    = 0
+    content_h   = N * ROW_H + 40        # total scrollable height
+    max_scroll  = max(0, content_h - VIEWPORT_H)
+    prev_buttons = mouse.getPressed()
+
+    event.clearEvents()
+
+    while True:
+        all_answered = all(r is not None for r in responses)
+
+        # ── Input ─────────────────────────────────────────────────────────────
+        keys = event.getKeys(["up", "down", "escape"])
+        for k in keys:
+            if k == "escape":
+                aperture.disable()
+                win.close(); core.quit()
+            if k == "up":
+                scroll_y = max(0, scroll_y - SCROLL_STEP)
+            if k == "down":
+                scroll_y = min(max_scroll, scroll_y + SCROLL_STEP)
+
+        wheel = mouse.getWheelRel()[1]
+        if wheel != 0:
+            scroll_y = max(0, min(max_scroll, scroll_y - wheel * SCROLL_STEP))
+
+        cur_buttons = mouse.getPressed()
+        just_clicked = cur_buttons[0] and not prev_buttons[0]
+        prev_buttons = cur_buttons
+
+        if just_clicked:
+            mx, my = mouse.getPos()
+
+            # Check radio buttons
+            for i in range(N):
+                row_y = VIEWPORT_TOP - 30 - i * ROW_H + scroll_y
+                if abs(my - row_y) < ROW_H / 2:
+                    for j in range(N_OPTS):
+                        if abs(mx - col_xs[j]) < ROW_H / 2:
+                            responses[i] = j
+                            break
+
+            # Submit button
+            if all_answered:
+                bx, by = 820, VIEWPORT_BOT - 50
+                if abs(mx - bx) < 90 and abs(my - by) < 22:
+                    break
+
+        # ── Draw ──────────────────────────────────────────────────────────────
+        aperture.enable()
+
+        for i in range(N):
+            row_y = VIEWPORT_TOP - 30 - i * ROW_H + scroll_y
+
+            # Skip rows fully outside viewport
+            if row_y < VIEWPORT_BOT - ROW_H or row_y > VIEWPORT_TOP + ROW_H:
+                continue
+
+            # Alternating row background
+            row_bg = visual.Rect(
+                win, width=1880, height=ROW_H - 4,
+                pos=(0, row_y),
+                fillColor=[-0.82, -0.82, -0.58] if i % 2 == 0 else [-0.78, -0.78, -0.54],
+                lineWidth=0
             )
-            option_circles.append(circle)
+            row_bg.draw()
 
-            label = visual.TextStim(
-                win,
-                text=lab,
-                pos=(x, y_anchor - 20),
-                color="white",
-                height=20,
-                wrapWidth=180,
-                alignText="center"
-            )
-            option_labels.append(label)
+            # Highlight unanswered rows in red tint if submit was attempted
+            # (passive — no explicit attempt tracking needed here)
 
-        while selected is None:
-            keys = event.getKeys(["escape"])
-            if "escape" in keys:
-                core.quit()
+            # Question number
+            q_num_stims[i].pos  = (Q_NUM_X, row_y)
+            q_num_stims[i].draw()
 
-            question_stim.draw()
-            instruction_stim.draw()
-            item_number_stim.draw()
+            # Question text
+            q_text_stims[i].pos = (Q_TEXT_X, row_y)
+            q_text_stims[i].draw()
 
-            for i, circle in enumerate(option_circles):
-                if selected == i + 1:
+            # Radio buttons
+            for j, circle in enumerate(circles[i]):
+                circle.pos = (col_xs[j], row_y)
+                if responses[i] == j:
                     circle.fillColor = [0.94, 0.75, 0.25]
+                    circle.lineColor = [0.94, 0.75, 0.25]
                 else:
                     circle.fillColor = None
-
+                    circle.lineColor = "white"
                 circle.draw()
-                option_labels[i].draw()
 
-            win.flip()
+        aperture.disable()
 
-            buttons, times = mouse.getPressed(getTime=True)
-            if buttons[0]:
-                for i, circle in enumerate(option_circles):
-                    if circle.contains(mouse):
-                        selected = i + 1
-                        break
+        # Cover strips
+        cover_top.draw()
+        cover_bot.draw()
 
-                while any(mouse.getPressed()):
-                    core.wait(0.01)
+        # Pinned header row background
+        header_bg = visual.Rect(win, width=1920, height=160,
+                                pos=(0, HEADER_Y + 30),
+                                fillColor=[-0.85, -0.85, -0.6], lineWidth=0)
+        header_bg.draw()
 
-        question_stim.draw()
-        instruction_stim.draw()
-        item_number_stim.draw()
+        for hs in header_stims:
+            hs.draw()
 
-        for i, circle in enumerate(option_circles):
-            if selected == i + 1:
-                circle.fillColor = [0.94, 0.75, 0.25]
-            else:
-                circle.fillColor = None
-            circle.draw()
-            option_labels[i].draw()
+        title_stim.draw()
+        scroll_hint_stim.draw()
+
+        # Scrollbar
+        if max_scroll > 0:
+            bar_track.draw()
+            frac  = scroll_y / max_scroll
+            bar_h = max(40, VIEWPORT_H * (VIEWPORT_H / content_h))
+            bar_y = VIEWPORT_TOP - bar_h / 2 - frac * (VIEWPORT_H - bar_h)
+            visual.Rect(win, width=8, height=bar_h,
+                        pos=(940, bar_y),
+                        fillColor=[0.94, 0.75, 0.25], lineWidth=0).draw()
+
+        # Submit button
+        if all_answered:
+            btn_rect.fillColor = [0.94, 0.75, 0.25]
+            btn_rect.lineColor = [0.94, 0.75, 0.25]
+            btn_text.color     = [-0.85, -0.85, -0.6]
+        else:
+            btn_rect.fillColor = [-0.6, -0.6, -0.5]
+            btn_rect.lineColor = [-0.3, -0.3, -0.2]
+            btn_text.color     = [-0.2, -0.2, -0.1]
+        btn_rect.draw()
+        btn_text.draw()
 
         win.flip()
-        core.wait(0.2)
 
+    # ── Save all responses ────────────────────────────────────────────────────
+    for i, item in enumerate(items):
         append_trial({
-            "participant_id": participant_id,
-            "age": age,
-            "gender": gender,
-            "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-
-            "trial_number": "",
-            "card_selected": "",
-            "total_before": "",
-            "amount_won": "",
-            "amount_lost": "",
-            "net_change": "",
-            "loss_occurred": "",
-            "total_after": "",
+            "participant_id":   participant_id,
+            "age":              age,
+            "sex":              sex,
+            "date":             datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "trial_number":     "",
+            "card_selected":    "",
+            "total_before":     "",
+            "amount_won":       "",
+            "amount_lost":      "",
+            "net_change":       "",
+            "loss_occurred":    "",
+            "total_after":      "",
             "reaction_time_ms": "",
-
-            "questionnaire": "HSPS",
-            "question_number": q_num,
-            "question_text": item,
-            "response_value": selected,
-            "response_label": HSPS_LABELS[selected - 1]
+            "questionnaire":    q_name,
+            "question_number":  i + 1,
+            "question_text":    item,
+            "response_value":   responses[i] + 1,
+            "response_label":   labels[responses[i]]
         })
 
-        event.clearEvents()
-
+    aperture.disable()
     win.mouseVisible = False
-    
+
+
+def run_hsps_questionnaire():
+    run_scrollable_questionnaire(
+        q_name="HSPS",
+        items=HSPS_ITEMS,
+        labels=HSPS_LABELS,
+        intro_text=(
+            "Questionnaire 1\n\n"
+            "A number of statements which people have used to describe themselves "
+            "are given below. Read each statement and then select the response "
+            "that indicates how you generally feel.\n\n"
+            "There are no right or wrong answers. Do not spend too much time on "
+            "any one statement, but give the answer which seems to describe how "
+            "you generally feel.\n\n"
+            "Thank you.\n\n"
+            "Press SPACE to begin."
+        )
+    )
+
 # ── run HSPS questionnaire ────────────────────────────────────────────────────────
 run_hsps_questionnaire()
 
@@ -935,154 +1147,19 @@ IUS_LABELS = [
 ]
 
 def run_ius_questionnaire():
-    win.mouseVisible = True
-    mouse = event.Mouse(win=win)
-
-    intro_text = (
-        "Questionnaire 2\n\n"
-        "You will find below a series of statements which describe how people "
-        "may react to the uncertainties of life.\n\n"
-        "Please use the scale below to describe to what extent each item is "
-        "characteristic of you.\n\n"
-        "Press SPACE to begin."
+    run_scrollable_questionnaire(
+        q_name="IUS",
+        items=IUS_ITEMS,
+        labels=IUS_LABELS,
+        intro_text=(
+            "Questionnaire 2\n\n"
+            "You will find below a series of statements which describe how people "
+            "may react to the uncertainties of life.\n\n"
+            "Please use the scale below to describe to what extent each item is "
+            "characteristic of you.\n\n"
+            "Press SPACE to begin."
+        )
     )
-
-    show_text(intro_text, wait_for_key=True)
-
-    for q_num, item in enumerate(IUS_ITEMS, start=1):
-        selected = None
-        mouse.clickReset()
-        event.clearEvents()
-
-        question_stim = visual.TextStim(
-            win,
-            text=item,
-            pos=(0, 250),
-            color="white",
-            height=30,
-            wrapWidth=1400,
-            alignText="center"
-        )
-
-        instruction_stim = visual.TextStim(
-            win,
-            text="Click one response below",
-            pos=(0, 140),
-            color=[0.8, 0.8, 0.8],
-            height=24
-        )
-
-        item_number_stim = visual.TextStim(
-            win,
-            text=f"Item {q_num} of {len(IUS_ITEMS)}",
-            pos=(0, 470),
-            color=[0.7, 0.7, 0.6],
-            height=24
-        )
-
-        scale_width = 1400
-        start_x = -scale_width / 2
-        step_x = scale_width / (len(IUS_LABELS) - 1)
-        y_anchor = -20
-
-        option_circles = []
-        option_labels = []
-
-        for i, lab in enumerate(IUS_LABELS):
-            x = start_x + i * step_x
-
-            circle = visual.Circle(
-                win,
-                radius=18,
-                pos=(x, y_anchor + 50),
-                fillColor=None,
-                lineColor="white",
-                lineWidth=3
-            )
-            option_circles.append(circle)
-
-            label = visual.TextStim(
-                win,
-                text=lab,
-                pos=(x, y_anchor - 20),
-                color="white",
-                height=20,
-                wrapWidth=220,
-                alignText="center"
-            )
-            option_labels.append(label)
-
-        while selected is None:
-            keys = event.getKeys(["escape"])
-            if "escape" in keys:
-                core.quit()
-
-            question_stim.draw()
-            instruction_stim.draw()
-            item_number_stim.draw()
-
-            for i, circle in enumerate(option_circles):
-                if selected == i + 1:
-                    circle.fillColor = [0.94, 0.75, 0.25]
-                else:
-                    circle.fillColor = None
-
-                circle.draw()
-                option_labels[i].draw()
-
-            win.flip()
-
-            buttons, times = mouse.getPressed(getTime=True)
-            if buttons[0]:
-                for i, circle in enumerate(option_circles):
-                    if circle.contains(mouse):
-                        selected = i + 1
-                        break
-
-                while any(mouse.getPressed()):
-                    core.wait(0.01)
-
-        question_stim.draw()
-        instruction_stim.draw()
-        item_number_stim.draw()
-
-        for i, circle in enumerate(option_circles):
-            if selected == i + 1:
-                circle.fillColor = [0.94, 0.75, 0.25]
-            else:
-                circle.fillColor = None
-            circle.draw()
-            option_labels[i].draw()
-
-        win.flip()
-        core.wait(0.2)
-
-        append_trial({
-            "participant_id": participant_id,
-            "age": age,
-            "gender": gender,
-            "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-
-            "trial_number": "",
-            "card_selected": "",
-            "total_before": "",
-            "amount_won": "",
-            "amount_lost": "",
-            "net_change": "",
-            "loss_occurred": "",
-            "total_after": "",
-            "reaction_time_ms": "",
-
-            "questionnaire": "IUS",
-            "question_number": q_num,
-            "question_text": item,
-            "response_value": selected,
-            "response_label": IUS_LABELS[selected - 1]
-        })
-
-        event.clearEvents()
-
-    win.mouseVisible = False
 
 # ── run IUS questionnaire ────────────────────────────────────────────────────────
 run_ius_questionnaire()
@@ -1096,8 +1173,8 @@ show_text(
 )
 
 # ── Cleanup ───────────────────────────────────────────────────────────────────
-if USE_LABCHART:
-    ser.close()
+if USE_LABCHART and _port is not None:
+    _port.setData(0)
 
 win.close()
 core.quit()
